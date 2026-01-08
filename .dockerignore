@@ -1,0 +1,12 @@
+node_modules
+build
+.git
+.gitignore
+README.md
+DEBUG.md
+DOCS.md
+TROUBLESHOOTING_WEBSOCKET.md
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+.DS_Store

@@ -1,0 +1,8 @@
+services:
+  webrtc-client:
+    build:
+      context: .
+    container_name: webrtc-client
+    ports:
+      - "5674:80"
+    restart: unless-stopped

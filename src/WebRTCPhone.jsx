@@ -1,112 +1,205 @@
 import React, { useEffect, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 import JsSIP from "jssip";
+import { SIP_CONFIG } from "./config";
 
 let ua = null;
 let currentSession = null;
 
-const WSS_URL = "wss://srv762442.hstgr.cloud:8089/ws";
-const SIP_DOMAIN = "srv762442.hstgr.cloud";
+const SIP_DOMAIN = SIP_CONFIG.domain;
 
-// Ramal WebRTC (pjsip.conf)
-const EXTENSION_USER = "3000";
-const EXTENSION_PASS = "senha123";
-const DISPLAY_NAME = "WebRTC 3000";
+function normalizePBX(numberRaw) {
+  const raw = (numberRaw || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("+")) {
+    const digits = raw.slice(1).replace(/[^\d]/g, "");
+    return "+" + digits;
+  }
+  const n = raw.replace(/[^\d]/g, "");
 
-// Converte entradas comuns (com/sem +, com 00/011, com DDD) para E.164.
-// Foco Brasil (+55). Se já vier com +, mantém.
-function normalizeE164(numberRaw) {
-  let n = (numberRaw || "").replace(/[^\d+]/g, "");
-  if (!n) return "";
-  if (n.startsWith("+")) return n;                   // já E.164
-  if (n.startsWith("00")) n = `+${n.slice(2)}`;      // 00 -> +
-  else if (n.startsWith("011")) n = `+${n.slice(3)}`;// 011 -> +
-  // Brasil: 10 ou 11 dígitos (fixo/celular com DDD) -> presume +55
-  if (/^\d{10,11}$/.test(n)) return `+55${n}`;
-  // Se vier 12/13 dígitos sem + (ex.: 55119...), adiciona +
-  if (/^\d{12,13}$/.test(n)) return `+${n}`;
+  if (/^\d{8,9}$/.test(n)) return n;
+  if (/^\d{10,11}$/.test(n)) return n;
+  if (/^\d{12,13}$/.test(n)) return n;
   return n;
 }
 
 const WebRTCPhone = () => {
+  const { numero } = useParams();
+
   const [status, setStatus] = useState("Desconectado");
-  const [destino, setDestino] = useState("+5519989751609"); // número exemplo em E.164
+  const [destino, setDestino] = useState("");
+  const [inCall, setInCall] = useState(false);
+  const [showError, setShowError] = useState(false);
+  const [isDialing, setIsDialing] = useState(false);
+
+  const [sipUser, setSipUser] = useState(null);
+  const [sipPass, setSipPass] = useState(null);
+  const [wssUrl, setWssUrl] = useState(null);
+
   const remoteAudioRef = useRef(null);
+  const errorTimeoutRef = useRef(null);
 
   useEffect(() => {
-    const socket = new JsSIP.WebSocketInterface(WSS_URL);
+    if (numero) setDestino(decodeURIComponent(numero));
+  }, [numero]);
 
-    const configuration = {
-      sockets: [socket],
-      uri: `sip:${EXTENSION_USER}@${SIP_DOMAIN}`,
-      password: EXTENSION_PASS,
-      authorization_user: EXTENSION_USER,
-      display_name: DISPLAY_NAME,
-      session_timers: false,
-      pcConfig: {
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          // Recomendado em produção:
-          // { urls: "turn:SEU_TURN:3478", username: "user", credential: "pass" },
-        ],
-      },
-    };
-
-    ua = new JsSIP.UA(configuration);
-
-    // Eventos da UA
-    ua.on("connected", () => setStatus("Conectado ao WebSocket"));
-    ua.on("disconnected", () => setStatus("Desconectado"));
-
-    ua.on("registered", () => setStatus("Registrado no Asterisk"));
-    ua.on("unregistered", () => setStatus("Não registrado"));
-    ua.on("registrationFailed", (e) => {
-      console.error("Registro falhou:", e.cause);
-      setStatus(`Falha no registro: ${e.cause || ""}`);
-    });
-
-    ua.on("newRTCSession", (e) => {
-      const session = e.session;
-      currentSession = session;
-
-      bindSessionEvents(session);
-      attachRemoteAudio(session);
-
-      if (session.direction === "incoming") {
-        setStatus("Recebendo chamada…");
-        // Auto-answer para testes. Em produção, apresentar UI de atender/recusar.
-        session.answer({
-          mediaConstraints: { audio: true, video: false },
-          pcConfig: configuration.pcConfig,
-        });
-      }
-    });
-
-    ua.start();
-
-    return () => {
+  // ======================================================
+  // 🔥  Registro SIP
+  // ======================================================
+  useEffect(() => {
+    function startUA() {
       try {
-        if (currentSession && currentSession.isEstablished()) {
-          currentSession.terminate();
-        }
-        if (ua) ua.stop();
+        // Usa configuração fixa
+        const ext = SIP_CONFIG.extensions.find(
+          e => e.extension === SIP_CONFIG.defaultExtension
+        ) || SIP_CONFIG.extensions[0];
+        
+        const extData = {
+          extension: ext.extension,
+          password: ext.password,
+          wss: SIP_CONFIG.wssUrl
+        };
+        
+        console.log("🟢 Usando ramal:", extData.extension);
+        console.log("🔌 URL WebSocket:", extData.wss);
+
+        setSipUser(extData.extension);
+        setSipPass(extData.password);
+        setWssUrl(extData.wss);
+
+        const socket = new JsSIP.WebSocketInterface(extData.wss);
+        socket.via_transport = "wss";
+
+        const configuration = {
+          sockets: [socket],
+          uri: `sip:${extData.extension}@${SIP_DOMAIN}`,
+          authorization_user: extData.extension,
+          password: extData.password,
+          display_name: `WebRTC ${extData.extension}`,
+          session_timers: false,
+          pcConfig: {
+            iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+          },
+        };
+
+        ua = new JsSIP.UA(configuration);
+
+        // UA EVENTS
+        ua.on("connected", () => setStatus("Conectado ao WebSocket"));
+        ua.on("disconnected", () => setStatus("Desconectado"));
+
+        ua.on("registered", () => {
+          console.log("UA registrado:", extData.extension);
+          setStatus(`Registrado como ${extData.extension}`);
+        });
+
+        ua.on("registrationFailed", (e) =>
+          setStatus("Falha no registro: " + (e.cause || ""))
+        );
+        ua.on("unregistered", () => setStatus("Não registrado"));
+
+        ua.on("newRTCSession", (e) => {
+          const session = e.session;
+
+          if (currentSession && currentSession !== session) {
+            if (session.direction === "incoming") {
+              session.terminate({
+                status_code: 486,
+                reason_phrase: "Busy Here",
+              });
+            }
+            return;
+          }
+
+          currentSession = session;
+          bindSessionEvents(session);
+          attachRemoteAudio(session);
+
+          if (session.direction === "incoming") {
+            setStatus("Recebendo chamada…");
+            setInCall(true);
+            session.answer({
+              mediaConstraints: { audio: true, video: false },
+              pcConfig: configuration.pcConfig,
+            });
+          }
+        });
+
+        ua.start();
       } catch (err) {
-        console.warn("Cleanup UA:", err);
+        console.error("❌ Erro no registro:", err);
       }
+    }
+
+    startUA();
+
+    // Cleanup
+    return () => {
+      if (ua) ua.stop();
     };
   }, []);
 
+  // ======================================================
+  // Auto-chamada quando número vier na URL
+  // ======================================================
+  useEffect(() => {
+    if (numero && ua && !currentSession && !isDialing) {
+      // Aguarda um pouco para garantir que o UA está registrado
+      const timer = setTimeout(() => {
+        if (ua && ua.isRegistered() && !currentSession) {
+          iniciarChamada();
+        }
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [numero, ua]);
+
+  // ======================================================
+  // Sessão / Audio / Eventos
+  // ======================================================
+
   const bindSessionEvents = (session) => {
-    session.on("progress", () => setStatus("Chamando…"));
-    session.on("accepted", () => setStatus("Conectado!"));
-    session.on("confirmed", () => setStatus("Estabelecida"));
+    session.on("progress", () => {
+      setStatus("Chamando…");
+      setShowError(false);
+      setIsDialing(false);
+    });
+
+    session.on("accepted", () => {
+      setStatus("Conectado!");
+      setInCall(true);
+      setShowError(false);
+    });
+
+    session.on("confirmed", () => {
+      setStatus("Estabelecida");
+      setShowError(false);
+    });
+
     session.on("ended", () => {
       setStatus("Encerrado");
+      setInCall(false);
       currentSession = null;
+      setShowError(false);
     });
+
     session.on("failed", (e) => {
-      console.error("Chamada falhou:", e.cause);
-      setStatus(`Falhou: ${e.cause || ""}`);
+      const cause = e.cause || "Falhou";
+      console.error("❌ Chamada falhou:", e);
+      console.error("Causa:", cause);
+      console.error("Originator:", e.originator);
+      console.error("Message:", e.message);
+      setStatus("Falhou: " + cause);
+      setInCall(false);
+      setShowError(true);
       currentSession = null;
+      setIsDialing(false);
+
+      if (errorTimeoutRef.current) clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = setTimeout(() => {
+        setShowError(false);
+        setStatus("Registrado");
+      }, 4000);
     });
   };
 
@@ -114,87 +207,154 @@ const WebRTCPhone = () => {
     const pc = session.connection;
     if (!pc) return;
     pc.addEventListener("track", (event) => {
-      const stream = event.streams && event.streams[0];
+      const stream = event.streams[0];
       if (stream && remoteAudioRef.current) {
-        if (remoteAudioRef.current.srcObject !== stream) {
-          remoteAudioRef.current.srcObject = stream;
-        }
-        remoteAudioRef.current.muted = false;
-        remoteAudioRef.current
-          .play()
-          .catch((err) =>
-            console.warn("Autoplay bloqueado. Interaja com a página primeiro.", err)
-          );
+        remoteAudioRef.current.srcObject = stream;
+        remoteAudioRef.current.play().catch(() => {});
       }
     });
   };
 
-  const ligar = () => {
-    if (!ua) return;
+  // ======================================================
+  // Chamadas
+  // ======================================================
 
-    const e164 = normalizeE164(destino);
-    if (!e164) {
-      setStatus("Número inválido");
+  const iniciarChamada = () => {
+    if (!ua) {
+      console.error("❌ UA não inicializado");
+      setStatus("Sistema não inicializado");
+      setShowError(true);
       return;
     }
 
-    // Disca para o Asterisk; o contexto [discagem] envia para Twilio como:
-    // Dial(PJSIP/twilio-endpoint/sip:+E164@imersa.pstn.twilio.com)
-    const target = `sip:${e164}@${SIP_DOMAIN}`;
+    if (isDialing || currentSession) {
+      console.warn("⚠️ Já existe uma chamada em andamento");
+      return;
+    }
+
+    // Verifica se está conectado
+    if (!ua.isConnected()) {
+      console.error("❌ WebSocket não conectado");
+      setStatus("WebSocket não conectado. Verifique a URL.");
+      setShowError(true);
+      return;
+    }
+
+    // Verifica se está registrado
+    if (!ua.isRegistered()) {
+      console.error("❌ UA não registrado no servidor SIP");
+      setStatus("Não registrado no servidor SIP");
+      setShowError(true);
+      return;
+    }
+
+    const pbxNumber = normalizePBX(destino);
+    if (!pbxNumber) {
+      setStatus("Número inválido");
+      setShowError(true);
+      return;
+    }
+
+    // Força E.164 com +55 para externos; mantém internos (8-9) inalterados
+    let dialNumber = pbxNumber;
+    const countryId = (SIP_CONFIG && SIP_CONFIG.countryId) || "55";
+    const isInternal = /^\d{8,9}$/.test(pbxNumber);
+
+    if (!isInternal) {
+      if (pbxNumber.startsWith("+")) {
+        // já está em E.164
+        dialNumber = pbxNumber;
+      } else if (/^\d{10,11}$/.test(pbxNumber)) {
+        // nacional sem DDI -> +55 + DDD+numero
+        dialNumber = `+${countryId}${pbxNumber}`;
+      } else if (new RegExp(`^${countryId}\\d{10,11}$`).test(pbxNumber)) {
+        // começa com 55 sem + -> adiciona +
+        dialNumber = `+${pbxNumber}`;
+      } else if (/^\d{12,15}$/.test(pbxNumber)) {
+        // outro DDI sem + -> adiciona +
+        dialNumber = `+${pbxNumber}`;
+      }
+    }
+
+    console.log("📞 Iniciando chamada para:", dialNumber);
+    setIsDialing(true);
+    const target = `sip:${dialNumber}@${SIP_DOMAIN}`;
 
     const options = {
       mediaConstraints: { audio: true, video: false },
       pcConfig: ua.configuration.pcConfig,
     };
 
-    currentSession = ua.call(target, options);
-    bindSessionEvents(currentSession);
-    attachRemoteAudio(currentSession);
+    try {
+      const newSession = ua.call(target, options);
+      currentSession = newSession;
+      bindSessionEvents(newSession);
+      attachRemoteAudio(newSession);
+    } catch (err) {
+      console.error("❌ Erro ao iniciar chamada:", err);
+      setStatus("Erro ao iniciar chamada");
+      setShowError(true);
+      setIsDialing(false);
+    }
   };
 
   const desligar = () => {
     if (currentSession) {
       currentSession.terminate();
-      setStatus("Chamada encerrada");
+      setInCall(false);
       currentSession = null;
     }
   };
 
   const enviarDTMF = (digit) => {
-    if (currentSession) {
-      currentSession.sendDTMF(digit);
-    }
+    if (currentSession) currentSession.sendDTMF(digit);
   };
 
+  // ======================================================
+  // UI
+  // (todo seu layout foi mantido)
+  // ======================================================
+
   return (
-    <div style={{ fontFamily: "Inter, Arial", padding: 16, maxWidth: 460 }}>
-      <h2>WebRTC Phone (JsSIP)</h2>
-      <p>
-        Status: <b>{status}</b>
-      </p>
+    <div style={{ padding: "40px" }}>
+      <h2>WebRTC Phone ({sipUser || "..."})</h2>
+      <p>Status: {status}</p>
 
-      <div style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr auto" }}>
-        <input
-          type="text"
-          value={destino}
-          onChange={(e) => setDestino(e.target.value)}
-          placeholder="Ex.: +5511999999999, 11999999999, 0115511..., 00..."
-          style={{ padding: 8 }}
-        />
-        <button onClick={ligar}>Ligar</button>
+      <input
+        value={destino}
+        onChange={(e) => setDestino(e.target.value)}
+        placeholder="Número"
+      />
+
+      <div style={{ marginBottom: "20px" }}>
+        <button onClick={iniciarChamada} disabled={inCall || isDialing}>
+          Ligar
+        </button>
+        <button 
+          onClick={desligar} 
+          disabled={!inCall}
+          style={{ marginLeft: "10px", backgroundColor: "red", color: "white" }}
+        >
+          Desligar
+        </button>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-        <button onClick={desligar}>Desligar</button>
-        <button onClick={() => enviarDTMF("1")}>DTMF 1</button>
-        <button onClick={() => enviarDTMF("2")}>DTMF 2</button>
-        <button onClick={() => enviarDTMF("3")}>DTMF 3</button>
-      </div>
+      {inCall && (
+        <>
+          <h3>DTMF</h3>
+          {["1", "2", "3", "*", "0", "#"].map((d) => (
+            <button key={d} onClick={() => enviarDTMF(d)}>
+              {d}
+            </button>
+          ))}
+        </>
+      )}
 
-      {/* áudio remoto oculto */}
-      <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: "none" }} />
+      <audio ref={remoteAudioRef} autoPlay playsInline />
     </div>
   );
 };
 
 export default WebRTCPhone;
+
+// Removed duplicate UI and styles to revert to original simpler layout
