@@ -14,7 +14,7 @@ Sistema simples para realizar chamadas VoIP usando PJSIP através do JsSIP.
 
 ## 📋 Pré-requisitos
 
-- Node.js 14+
+- Node.js 20+
 - Servidor PJSIP configurado
 
 ## 🔧 Instalação
@@ -22,6 +22,8 @@ Sistema simples para realizar chamadas VoIP usando PJSIP através do JsSIP.
 ```bash
 npm install
 ```
+
+Obs.: em produção/CI, mantenha o `package-lock.json` em sincronia com o `package.json`.
 
 ## ⚙️ Configuração
 
