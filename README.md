@@ -41,6 +41,13 @@ export const SIP_CONFIG = {
 };
 ```
 
+### Ramal livre (opcional)
+
+Para buscar um ramal livre automaticamente, o cliente chama o endpoint `GET /extensions/free` de um micro-serviço (AMI Listener).
+
+- Em produção, **não use** `localhost` (no navegador, `localhost` é o computador do usuário).
+- Configure `REACT_APP_AMI_API_BASE_URL` e faça rebuild da imagem.
+
 ## 🏃 Executar
 
 ```bash

@@ -2,6 +2,10 @@ services:
   webrtc-client:
     build:
       context: .
+      args:
+        # URL do micro-serviço AMI (opcional). Rebuild necessário ao alterar.
+        # Ex.: https://srv762442.hstgr.cloud/ami
+        - REACT_APP_AMI_API_BASE_URL=
     container_name: webrtc-client
     ports:
       - "5674:80"
