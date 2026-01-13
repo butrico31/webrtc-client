@@ -37,10 +37,15 @@ const WebRTCPhone = () => {
   const currentSessionRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const errorTimeoutRef = useRef(null);
+  const callBlockedRef = useRef(false);
 
   useEffect(() => {
     if (numero) setDestino(decodeURIComponent(numero));
   }, [numero]);
+
+  useEffect(() => {
+    callBlockedRef.current = false;
+  }, [destino]);
 
   const attachRemoteAudio = useCallback((session) => {
     const pc = session.connection;
@@ -58,7 +63,6 @@ const WebRTCPhone = () => {
     session.on("progress", () => {
       setStatus("Chamando…");
       setShowError(false);
-      setIsDialing(false);
     });
 
     session.on("accepted", () => {
@@ -81,10 +85,27 @@ const WebRTCPhone = () => {
 
     session.on("failed", (e) => {
       const cause = e.cause || "Falhou";
+      const statusCode = e?.response?.status_code;
+      const isRejected =
+        cause === JsSIP.C.causes.REJECTED ||
+        String(cause).toLowerCase() === "rejected" ||
+        statusCode === 603;
+
       console.error("❌ Chamada falhou:", e);
       console.error("Causa:", cause);
       console.error("Originator:", e.originator);
       console.error("Message:", e.message);
+
+      if (isRejected) {
+        callBlockedRef.current = true;
+        setStatus("Rejeitado");
+        setInCall(false);
+        setShowError(true);
+        currentSessionRef.current = null;
+        setIsDialing(false);
+        return;
+      }
+
       setStatus("Falhou: " + cause);
       setInCall(false);
       setShowError(true);
@@ -102,6 +123,12 @@ const WebRTCPhone = () => {
   const iniciarChamada = useCallback(() => {
     const ua = uaRef.current;
     const currentSession = currentSessionRef.current;
+
+    if (callBlockedRef.current) {
+      setStatus("Chamada rejeitada. Altere o número para tentar novamente.");
+      setShowError(true);
+      return;
+    }
 
     if (!ua) {
       console.error("❌ UA não inicializado");
@@ -328,24 +355,6 @@ const WebRTCPhone = () => {
       currentSessionRef.current = null;
     };
   }, [attachRemoteAudio, bindSessionEvents]);
-
-  // ======================================================
-  // Auto-chamada quando número vier na URL
-  // ======================================================
-  useEffect(() => {
-    if (!numero) return;
-    if (!sipRegistered) return;
-    if (currentSessionRef.current) return;
-    if (isDialing) return;
-
-    const timer = setTimeout(() => {
-      if (sipRegistered && !currentSessionRef.current) {
-        iniciarChamada();
-      }
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [iniciarChamada, isDialing, numero, sipRegistered]);
 
   const desligar = () => {
     if (currentSessionRef.current) {
