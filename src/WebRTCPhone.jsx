@@ -61,6 +61,7 @@ const WebRTCPhone = () => {
   const remoteAudioRef = useRef(null);
   const errorTimeoutRef = useRef(null);
   const callBlockedRef = useRef(false);
+  const lastDialRef = useRef({ dialNumber: null, atMs: 0 });
 
   const asteriskWsRef = useRef(null);
   const asteriskSseRef = useRef(null);
@@ -391,6 +392,19 @@ const WebRTCPhone = () => {
         dialNumber = `+${pbxNumber}`;
       }
     }
+
+    // Proteção contra discagem duplicada (ex.: chamada da função 2x por algum motivo)
+    // Se o mesmo número for discado em sequência muito rápida, ignora a segunda tentativa.
+    const nowMs = Date.now();
+    const last = lastDialRef.current;
+    if (last?.dialNumber === dialNumber && nowMs - (last?.atMs || 0) < 3500) {
+      logEvent("CALL", "dedup:skip", {
+        dialNumber,
+        elapsedMs: nowMs - (last?.atMs || 0),
+      });
+      return;
+    }
+    lastDialRef.current = { dialNumber, atMs: nowMs };
 
     console.log("📞 Iniciando chamada para:", dialNumber);
     setIsDialing(true);
