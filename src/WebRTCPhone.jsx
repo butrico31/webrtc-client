@@ -439,26 +439,43 @@ const WebRTCPhone = () => {
     let isCancelled = false;
     const abortController = new AbortController();
 
-    async function fetchFreeExtension(signal) {
-      const base = (SIP_CONFIG && SIP_CONFIG.amiApiBaseUrl) || "";
+    const normalizeJoin = (left, right) => {
+      const l = String(left || "").replace(/\/$/, "");
+      const r = String(right || "");
+      if (!r) return l;
+      if (r.startsWith("/")) return `${l}${r}`;
+      return `${l}/${r}`;
+    };
+
+    async function fetchFreeExtensions(signal) {
+      const base =
+        (SIP_CONFIG && SIP_CONFIG.amiApiBaseUrl) ||
+        process.env.REACT_APP_AMI_API_BASE_URL ||
+        "";
       if (!base) return null;
 
-      const url = `${base.replace(/\/$/, "")}/extensions/free`;
-      logEvent("AMI", "extensions:free:request", { url });
-      const res = await fetch(url, { method: "GET", signal });
+      const path =
+        (SIP_CONFIG && SIP_CONFIG.freeExtensionsPath) ||
+        process.env.REACT_APP_FREE_EXTENSIONS_PATH ||
+        "/extensions/free";
 
+      const url = normalizeJoin(base, path);
+      logEvent("AMI", "extensions:free:request", { url });
+
+      const res = await fetch(url, { method: "GET", signal });
       logEvent("AMI", "extensions:free:response", { url, status: res.status });
 
-      if (res.status === 404) {
+      if (res.status === 404 || res.status === 204) {
         return { noFreeExtensions: true };
       }
 
       if (!res.ok) {
         const text = await res.text().catch(() => "");
-        throw new Error(`Falha ao buscar ramal livre: HTTP ${res.status} ${text}`);
+        throw new Error(`Falha ao buscar ramais livres: HTTP ${res.status} ${text}`);
       }
 
-      return res.json();
+      const data = await res.json().catch(() => null);
+      return data;
     }
 
     async function startUA() {
@@ -467,7 +484,7 @@ const WebRTCPhone = () => {
         let extData = null;
 
         try {
-          const apiData = await fetchFreeExtension(abortController.signal);
+          const apiData = await fetchFreeExtensions(abortController.signal);
           if (isCancelled) return;
 
           if (apiData && apiData.noFreeExtensions) {
@@ -476,12 +493,37 @@ const WebRTCPhone = () => {
             return;
           }
 
-          if (apiData && apiData.extension && apiData.password && apiData.wss) {
+          const ramais = Array.isArray(apiData?.ramaisOffline)
+            ? apiData.ramaisOffline
+            : Array.isArray(apiData?.extensions)
+              ? apiData.extensions
+              : [];
+
+          if (ramais.length > 0) {
+            const chosenExtension = String(ramais[0]);
+
+            const localExtensions = (SIP_CONFIG && SIP_CONFIG.extensions) || [];
+            const found = localExtensions.find(
+              (e) => String(e.extension) === chosenExtension
+            );
+            const password =
+              String(found?.password || SIP_CONFIG?.defaultPassword || "");
+
+            if (!password) {
+              throw new Error(
+                `Ramal ${chosenExtension} veio sem senha configurada (SIP_CONFIG.defaultPassword/extensions)`
+              );
+            }
+
             extData = {
-              extension: String(apiData.extension),
-              password: String(apiData.password),
-              wss: String(apiData.wss),
+              extension: chosenExtension,
+              password,
+              wss: SIP_CONFIG.wssUrl,
             };
+          } else if (apiData && apiData.success === true) {
+            setStatus("Sem ramal livre disponível");
+            setShowError(true);
+            return;
           }
         } catch (err) {
           console.error("❌ Erro ao obter ramal livre no micro-serviço:", err);
