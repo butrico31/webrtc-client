@@ -11,7 +11,7 @@ function normalizePBX(numberRaw) {
   if (!raw) return "";
   if (raw.startsWith("+")) {
     const digits = raw.slice(1).replace(/[^\d]/g, "");
-    return "+" + digits;
+    return digits;
   }
   const n = raw.replace(/[^\d]/g, "");
 
@@ -382,14 +382,21 @@ const WebRTCPhone = () => {
     const isInternal = /^\d{8,9}$/.test(pbxNumber);
 
     if (!isInternal) {
-      if (pbxNumber.startsWith("+")) {
+      // Seu dialplan aceita:
+      // - +55E164 (que ele mesmo converte para 0 + DDD + numero)
+      // - 0 + DDD + numero (11 fixo / 12 celular)
+      // Para evitar cair em um padrão não tratado (ex.: 55DDD...), sempre
+      // convertemos entradas externas para o formato nacional com prefixo 0.
+      const isNatWithZero = /^0\d{10,11}$/.test(pbxNumber);
+      const isLocalDdd = /^\d{10,11}$/.test(pbxNumber);
+      const isE164Digits = new RegExp(`^${countryId}\\d{10,11}$`).test(pbxNumber);
+
+      if (isNatWithZero) {
         dialNumber = pbxNumber;
-      } else if (/^\d{10,11}$/.test(pbxNumber)) {
-        dialNumber = `+${countryId}${pbxNumber}`;
-      } else if (new RegExp(`^${countryId}\\d{10,11}$`).test(pbxNumber)) {
-        dialNumber = `+${pbxNumber}`;
-      } else if (/^\d{12,15}$/.test(pbxNumber)) {
-        dialNumber = `+${pbxNumber}`;
+      } else if (isE164Digits) {
+        dialNumber = `0${pbxNumber.slice(String(countryId).length)}`;
+      } else if (isLocalDdd) {
+        dialNumber = `0${pbxNumber}`;
       }
     }
 
@@ -755,7 +762,7 @@ const WebRTCPhone = () => {
               className="webrtc-input"
               value={destino}
               onChange={(e) => setDestino(e.target.value)}
-              placeholder="Ex.: 5511999998888"
+              placeholder="Ex.: +55DDDnúmero ou 0DDDnúmero"
               inputMode="tel"
               autoComplete="tel"
             />
